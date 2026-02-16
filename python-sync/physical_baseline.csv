@@ -1,0 +1,6 @@
+item_code,item_name,physical_count,baseline_date,notes
+BRAKE001,Brake Pads Front,25,2024-01-01,Physical count verified
+BRAKE002,Brake Pads Rear,18,2024-01-01,Physical count verified
+OIL001,Engine Oil 5W30,42,2024-01-01,Physical count verified
+FILTER001,Air Filter,15,2024-01-01,Physical count verified
+SPARK001,Spark Plugs,30,2024-01-01,Physical count verified

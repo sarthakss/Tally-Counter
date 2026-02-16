@@ -1,0 +1,21 @@
+{
+  "supabase": {
+    "url": "https://meycivzejhpgcsscevnn.supabase.co",
+    "key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1leWNpdnplamhwZ2Nzc2Nldm5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzNDg0OTAsImV4cCI6MjA4NTkyNDQ5MH0.9C3_2GS5EVclSTH4i4BwGWdB2850sFpmZr0qcdr2cGc"
+  },
+  "tally": {
+    "odbc_dsn": "TallyPrime",
+    "company_name": "SP Sales Corporation",
+    "connection_timeout": 30
+  },
+  "sync": {
+    "physical_baseline_file": "physical_baseline.csv",
+    "sync_interval_hours": 24,
+    "batch_size": 100,
+    "movement_days_back": 365
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "sync.log"
+  }
+}
