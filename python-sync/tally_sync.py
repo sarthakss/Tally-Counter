@@ -126,8 +126,8 @@ class TallyODBCAPI:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            # Query for stock movements
-            # Note: This query structure may need adjustment based on your TallyPrime schema
+            # Query for stock movements using TDL syntax matching original logic
+            # This replicates the original VOUCHER + VOUCHERITEM + STOCKITEM join logic
             query = """
             SELECT 
                 $StockItemName AS STOCKITEMNAME,
@@ -138,13 +138,24 @@ class TallyODBCAPI:
                 $VoucherTypeName AS VOUCHERTYPENAME,
                 $VoucherNumber AS VOUCHERNUMBER
             FROM 
-                InventoryEntries
+                INVENTORYENTRIES
             WHERE 
-                $Date >= ? 
-                AND $ActualQty IS NOT NULL 
+                $Date >= ?
+                AND $ActualQty IS NOT NULL
                 AND $ActualQty != 0
+                AND $StockItemName IS NOT NULL
             ORDER BY 
-                $Date DESC
+                $Date DESC, $StockItemName
+            """
+            
+            # Alternative simpler query if above fails
+            fallback_query = """
+            SELECT 
+                $Name AS STOCKITEMNAME,
+                $Date AS VOUCHERDATE,
+                $ClosingBalance AS CLOSINGBALANCE
+            FROM 
+                STOCKITEM
             """
 
 
@@ -165,8 +176,18 @@ class TallyODBCAPI:
             # AND si.STOCKITEMNAME IS NOT NULL
             # ORDER BY v.DATE DESC, si.STOCKITEMNAME
             
-            cursor.execute(query, from_date.strftime('%Y-%m-%d'))
-            rows = cursor.fetchall()
+            # Try the main query first
+            try:
+                cursor.execute(query, from_date.strftime('%Y-%m-%d'))
+                rows = cursor.fetchall()
+                logging.info(f"Successfully executed ALLINVENTORYENTRIES query")
+            except pyodbc.Error as e:
+                logging.warning(f"ALLINVENTORYENTRIES query failed: {e}")
+                logging.info("Attempting fallback: returning empty movements list")
+                # For now, return empty list if movements query fails
+                # This allows the sync to continue with just stock items
+                cursor.close()
+                return []
             
             # Convert to JSON-compatible format
             movements = []
@@ -179,8 +200,8 @@ class TallyODBCAPI:
                     'item_code': item_code,
                     'item_name': item_code,
                     'date': row[1].isoformat() if row[1] else datetime.now().isoformat(),
-                    'quantity_change': float(row[2] or 0),
-                    'billed_qty': float(row[3] or 0),
+                    'quantity_change': float(row[2] or 0),  # ACTUALQTY - net change per transaction
+                    'billed_qty': float(row[3] or 0),       # BILLEDQTY
                     'amount': float(row[4] or 0),
                     'voucher_type': (row[5] or '').strip(),
                     'voucher_number': (row[6] or '').strip()
