@@ -21,7 +21,7 @@ from supabase import create_client, Client
 class TallyODBCAPI:
     """ODBC-based interface for TallyPrime data extraction"""
     
-    def __init__(self, dsn_name: str = "TallyPrime", timeout: int = 30):
+    def __init__(self, dsn_name: str = "TallyODBC64_9000", timeout: int = 30):
         self.dsn_name = dsn_name
         self.timeout = timeout
         self.connection = None
@@ -69,22 +69,19 @@ class TallyODBCAPI:
             # Query to get stock items with current balances
             # Note: Column names may vary by TallyPrime version - adjust as needed
             query = """
-            SELECT 
-                STOCKITEMNAME,
-                PARENT,
-                BASEUNITS,
-                CLOSINGBALANCE,
-                CLOSINGVALUE,
-                CLOSINGRATE
-            FROM STOCKITEM 
-            WHERE STOCKITEMNAME IS NOT NULL
-            AND STOCKITEMNAME != ''
-            ORDER BY STOCKITEMNAME
-            """
+                        SELECT 
+                            $Name AS STOCKITEMNAME, 
+                            $Parent AS PARENT, 
+                            $BaseUnits AS BASEUNITS, 
+                            $ClosingBalance AS CLOSINGBALANCE, 
+                            $ClosingValue AS CLOSINGVALUE, 
+                            $ClosingRate AS CLOSINGRATE
+                        FROM STOCKITEM
+                        """
             
             cursor.execute(query)
             rows = cursor.fetchall()
-            
+            logging.info(f"Fetched {len(rows)} stock items from TallyPrime")
             # Convert to JSON-compatible format
             items = []
             for row in rows:
@@ -133,22 +130,40 @@ class TallyODBCAPI:
             # Note: This query structure may need adjustment based on your TallyPrime schema
             query = """
             SELECT 
-                si.STOCKITEMNAME,
-                v.DATE,
-                vi.ACTUALQTY,
-                vi.BILLEDQTY,
-                vi.AMOUNT,
-                v.VOUCHERTYPENAME,
-                v.VOUCHERNUMBER
-            FROM VOUCHER v
-            INNER JOIN VOUCHERITEM vi ON v.GUID = vi.VOUCHERGUID
-            INNER JOIN STOCKITEM si ON vi.STOCKITEMGUID = si.GUID
-            WHERE v.DATE >= ?
-            AND vi.ACTUALQTY IS NOT NULL
-            AND vi.ACTUALQTY != 0
-            AND si.STOCKITEMNAME IS NOT NULL
-            ORDER BY v.DATE DESC, si.STOCKITEMNAME
+                $StockItemName AS STOCKITEMNAME,
+                $Date AS VOUCHERDATE,
+                $ActualQty AS ACTUALQTY,
+                $BilledQty AS BILLEDQTY,
+                $Amount AS AMOUNT,
+                $VoucherTypeName AS VOUCHERTYPENAME,
+                $VoucherNumber AS VOUCHERNUMBER
+            FROM 
+                InventoryEntries
+            WHERE 
+                $Date >= ? 
+                AND $ActualQty IS NOT NULL 
+                AND $ActualQty != 0
+            ORDER BY 
+                $Date DESC
             """
+
+
+            # SELECT 
+            #     si.STOCKITEMNAME,
+            #     v.DATE,
+            #     vi.ACTUALQTY,
+            #     vi.BILLEDQTY,
+            #     vi.AMOUNT,
+            #     v.VOUCHERTYPENAME,
+            #     v.VOUCHERNUMBER
+            # FROM VOUCHER v
+            # INNER JOIN VOUCHERITEM vi ON v.GUID = vi.VOUCHERGUID
+            # INNER JOIN STOCKITEM si ON vi.STOCKITEMGUID = si.GUID
+            # WHERE v.DATE >= ?
+            # AND vi.ACTUALQTY IS NOT NULL
+            # AND vi.ACTUALQTY != 0
+            # AND si.STOCKITEMNAME IS NOT NULL
+            # ORDER BY v.DATE DESC, si.STOCKITEMNAME
             
             cursor.execute(query, from_date.strftime('%Y-%m-%d'))
             rows = cursor.fetchall()

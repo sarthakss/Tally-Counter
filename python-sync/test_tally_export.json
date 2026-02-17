@@ -1,0 +1,12 @@
+{
+  "export_timestamp": "2026-02-16T21:52:05.696523",
+  "export_info": {
+    "dsn_name": "TallyODBC64_9000",
+    "export_date": "2026-02-16",
+    "total_items": 0,
+    "total_movements": 0,
+    "movements_from_date": "2025-02-16"
+  },
+  "stock_items": [],
+  "stock_movements": []
+}

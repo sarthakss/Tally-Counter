@@ -24,7 +24,7 @@ def test_odbc_connection():
     print("=" * 60)
     
     # Initialize ODBC API
-    tally_api = TallyODBCAPI(dsn_name="TallyPrime", timeout=30)
+    tally_api = TallyODBCAPI(dsn_name="TallyODBC64_9000", timeout=30)
     
     try:
         # Test 1: Basic connection
