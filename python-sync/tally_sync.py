@@ -126,97 +126,170 @@ class TallyODBCAPI:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            # Query for stock movements using TDL syntax matching original logic
-            # This replicates the original VOUCHER + VOUCHERITEM + STOCKITEM join logic
-            query = """
-            SELECT 
-                $StockItemName AS STOCKITEMNAME,
-                $Date AS VOUCHERDATE,
-                $ActualQty AS ACTUALQTY,
-                $BilledQty AS BILLEDQTY,
-                $Amount AS AMOUNT,
-                $VoucherTypeName AS VOUCHERTYPENAME,
-                $VoucherNumber AS VOUCHERNUMBER
-            FROM 
-                INVENTORYENTRIES
-            WHERE 
-                $Date >= ?
-                AND $ActualQty IS NOT NULL
-                AND $ActualQty != 0
-                AND $StockItemName IS NOT NULL
-            ORDER BY 
-                $Date DESC, $StockItemName
-            """
-            
-            # Alternative simpler query if above fails
-            fallback_query = """
-            SELECT 
-                $Name AS STOCKITEMNAME,
-                $Date AS VOUCHERDATE,
-                $ClosingBalance AS CLOSINGBALANCE
-            FROM 
-                STOCKITEM
-            """
-
-
-            # SELECT 
-            #     si.STOCKITEMNAME,
-            #     v.DATE,
-            #     vi.ACTUALQTY,
-            #     vi.BILLEDQTY,
-            #     vi.AMOUNT,
-            #     v.VOUCHERTYPENAME,
-            #     v.VOUCHERNUMBER
-            # FROM VOUCHER v
-            # INNER JOIN VOUCHERITEM vi ON v.GUID = vi.VOUCHERGUID
-            # INNER JOIN STOCKITEM si ON vi.STOCKITEMGUID = si.GUID
-            # WHERE v.DATE >= ?
-            # AND vi.ACTUALQTY IS NOT NULL
-            # AND vi.ACTUALQTY != 0
-            # AND si.STOCKITEMNAME IS NOT NULL
-            # ORDER BY v.DATE DESC, si.STOCKITEMNAME
-            
-            # Try the main query first
-            try:
-                cursor.execute(query, from_date.strftime('%Y-%m-%d'))
-                rows = cursor.fetchall()
-                logging.info(f"Successfully executed ALLINVENTORYENTRIES query")
-            except pyodbc.Error as e:
-                logging.warning(f"ALLINVENTORYENTRIES query failed: {e}")
-                logging.info("Attempting fallback: returning empty movements list")
-                # For now, return empty list if movements query fails
-                # This allows the sync to continue with just stock items
-                cursor.close()
-                return []
-            
-            # Convert to JSON-compatible format
-            movements = []
-            for row in rows:
-                item_code = (row[0] or '').strip()
-                if not item_code:
-                    continue
-                    
-                movement = {
-                    'item_code': item_code,
-                    'item_name': item_code,
-                    'date': row[1].isoformat() if row[1] else datetime.now().isoformat(),
-                    'quantity_change': float(row[2] or 0),  # ACTUALQTY - net change per transaction
-                    'billed_qty': float(row[3] or 0),       # BILLEDQTY
-                    'amount': float(row[4] or 0),
-                    'voucher_type': (row[5] or '').strip(),
-                    'voucher_number': (row[6] or '').strip()
+            # Try multiple approaches to get stock movements
+            queries_to_try = [
+                # Approach 1: Simple VOUCHER query without joins
+                {
+                    "name": "Simple VOUCHER",
+                    "query": """
+                    SELECT 
+                        $VoucherTypeName AS VOUCHERTYPENAME,
+                        $VoucherNumber AS VOUCHERNUMBER,
+                        $Date AS VOUCHERDATE
+                    FROM 
+                        VOUCHER
+                    WHERE 
+                        $Date >= ?
+                    ORDER BY 
+                        $Date DESC
+                    """,
+                    "has_param": True
+                },
+                
+                # Approach 2: Try STOCKJOURNAL if it exists
+                {
+                    "name": "STOCKJOURNAL",
+                    "query": """
+                    SELECT 
+                        $StockItemName AS STOCKITEMNAME,
+                        $Date AS VOUCHERDATE,
+                        $Quantity AS QUANTITY
+                    FROM 
+                        STOCKJOURNAL
+                    WHERE 
+                        $Date >= ?
+                    ORDER BY 
+                        $Date DESC
+                    """,
+                    "has_param": True
+                },
+                
+                # Approach 3: Simple STOCKITEM with date filter
+                {
+                    "name": "STOCKITEM with date",
+                    "query": """
+                    SELECT 
+                        $Name AS STOCKITEMNAME,
+                        $ClosingBalance AS CLOSINGBALANCE,
+                        $OpeningBalance AS OPENINGBALANCE
+                    FROM 
+                        STOCKITEM
+                    WHERE 
+                        $Name IS NOT NULL
+                    ORDER BY 
+                        $Name
+                    """,
+                    "has_param": False
                 }
-                movements.append(movement)
+            ]
             
+            for approach in queries_to_try:
+                try:
+                    logging.info(f"Trying {approach['name']} approach...")
+                    
+                    if approach['has_param']:
+                        cursor.execute(approach['query'], from_date.strftime('%Y-%m-%d'))
+                    else:
+                        cursor.execute(approach['query'])
+                    
+                    rows = cursor.fetchall()
+                    logging.info(f"✅ {approach['name']} query successful! Got {len(rows)} rows")
+                    
+                    # Process the results based on which query worked
+                    movements = self._process_movement_results(rows, approach['name'])
+                    cursor.close()
+                    return movements
+                    
+                except pyodbc.Error as e:
+                    logging.warning(f"❌ {approach['name']} failed: {e}")
+                    continue
+            
+            # If all approaches failed
+            logging.error("All stock movement query approaches failed")
             cursor.close()
-            logging.info(f"Retrieved {len(movements)} stock movements via ODBC")
+            return []
+            
+        except Exception as e:
+            logging.error(f"Unexpected error in get_stock_movements: {e}")
+            return []
+    
+    def _process_movement_results(self, rows: List, query_type: str) -> List[Dict]:
+        """
+        Process movement query results based on the query type that succeeded
+        
+        Args:
+            rows: Raw query results
+            query_type: Which query approach was used
+            
+        Returns:
+            List of movement dictionaries
+        """
+        movements = []
+        
+        try:
+            if query_type == "Simple VOUCHER":
+                # Process voucher-only results - limited movement data
+                for row in rows:
+                    movement = {
+                        'item_code': 'UNKNOWN',  # Can't get item from voucher-only query
+                        'item_name': 'UNKNOWN',
+                        'date': row[2].isoformat() if row[2] else datetime.now().isoformat(),
+                        'quantity_change': 0,  # Can't determine quantity from voucher-only
+                        'billed_qty': 0,
+                        'amount': 0,
+                        'voucher_type': (row[0] or '').strip(),
+                        'voucher_number': (row[1] or '').strip()
+                    }
+                    movements.append(movement)
+                    
+            elif query_type == "STOCKJOURNAL":
+                # Process stock journal results - has item and quantity data
+                for row in rows:
+                    item_code = (row[0] or '').strip()
+                    if not item_code:
+                        continue
+                        
+                    movement = {
+                        'item_code': item_code,
+                        'item_name': item_code,
+                        'date': row[1].isoformat() if row[1] else datetime.now().isoformat(),
+                        'quantity_change': float(row[2] or 0),  # QUANTITY field
+                        'billed_qty': float(row[2] or 0),
+                        'amount': 0,  # Not available in stock journal
+                        'voucher_type': 'Stock Journal',
+                        'voucher_number': ''
+                    }
+                    movements.append(movement)
+                    
+            elif query_type == "STOCKITEM with date":
+                # Process stock item balance differences - calculate implied movements
+                for row in rows:
+                    item_code = (row[0] or '').strip()
+                    if not item_code:
+                        continue
+                        
+                    closing_balance = float(row[1] or 0)
+                    opening_balance = float(row[2] or 0)
+                    net_change = closing_balance - opening_balance
+                    
+                    if net_change != 0:  # Only include items with changes
+                        movement = {
+                            'item_code': item_code,
+                            'item_name': item_code,
+                            'date': datetime.now().isoformat(),  # Use current date as approximation
+                            'quantity_change': net_change,
+                            'billed_qty': abs(net_change),
+                            'amount': 0,
+                            'voucher_type': 'Balance Change',
+                            'voucher_number': ''
+                        }
+                        movements.append(movement)
+            
+            logging.info(f"Processed {len(movements)} movements from {query_type} query")
             return movements
             
-        except pyodbc.Error as e:
-            logging.error(f"Error fetching stock movements from TallyPrime: {e}")
-            return []
         except Exception as e:
-            logging.error(f"Unexpected error fetching stock movements: {e}")
+            logging.error(f"Error processing {query_type} results: {e}")
             return []
     
     def export_to_json_file(self, filename: str = 'tally_export.json') -> bool:
