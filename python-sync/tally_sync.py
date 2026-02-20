@@ -432,6 +432,22 @@ class MultiCompanyTallyODBCAPI:
         except Exception as e:
             logging.error(f"Failed to export multi-company data: {e}")
             return False
+       
+    def export_to_json_file(self, filename: str = 'debug_tally_export.json') -> bool:
+        """
+        Export aggregated multi-company data to JSON file for compatibility with TallySyncManager
+       
+        Args:
+            filename: Output JSON filename
+           
+        Returns:
+            True if export successful, False otherwise
+        """
+        return self.export_multi_company_data(filename)
+   
+    def close_connection(self):
+        """Close all connections - compatibility method for TallySyncManager"""
+        self.close_all_connections()
 
 
 class CleanSlateEngine:
