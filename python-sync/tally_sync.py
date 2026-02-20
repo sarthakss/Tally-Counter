@@ -21,9 +21,10 @@ from supabase import create_client, Client
 class TallyODBCAPI:
     """ODBC-based interface for TallyPrime data extraction"""
     
-    def __init__(self, dsn_name: str = "TallyODBC64_9000", timeout: int = 30):
+    def __init__(self, dsn_name: str = "TallyODBC64_9000", timeout: int = 30, company_name: str = "Default"):
         self.dsn_name = dsn_name
         self.timeout = timeout
+        self.company_name = company_name
         self.connection = None
     
     def test_connection(self) -> bool:
@@ -226,6 +227,213 @@ class TallyODBCAPI:
             return False
 
 
+class MultiCompanyTallyODBCAPI:
+    """Multi-company ODBC interface for aggregating data from multiple TallyPrime instances"""
+    
+    def __init__(self, companies_config: List[Dict]):
+        """
+        Initialize multi-company API
+        
+        Args:
+            companies_config: List of company configurations with dsn_name, timeout, and company_name
+        """
+        self.companies = []
+        for config in companies_config:
+            company_api = TallyODBCAPI(
+                dsn_name=config['dsn_name'],
+                timeout=config.get('timeout', 30),
+                company_name=config['company_name']
+            )
+            self.companies.append(company_api)
+        
+        logging.info(f"Initialized multi-company API for {len(self.companies)} companies")
+    
+    def test_all_connections(self) -> Dict[str, bool]:
+        """Test connections to all companies"""
+        results = {}
+        for company_api in self.companies:
+            try:
+                result = company_api.test_connection()
+                results[company_api.company_name] = result
+                if result:
+                    logging.info(f" {company_api.company_name} connection successful")
+                else:
+                    logging.error(f" {company_api.company_name} connection failed")
+            except Exception as e:
+                logging.error(f" {company_api.company_name} connection error: {e}")
+                results[company_api.company_name] = False
+        
+        return results
+    
+    def get_aggregated_stock_items(self) -> List[Dict]:
+        """
+        Get stock items from all companies and aggregate by item_code
+        
+        Returns:
+            List of dictionaries with combined stock data
+        """
+        all_items = {}
+        
+        for company_api in self.companies:
+            try:
+                logging.info(f"Fetching stock items from {company_api.company_name}...")
+                company_items = company_api.get_stock_items()
+                
+                for item in company_items:
+                    item_name = item['item_name']
+                    
+                    if item_name not in all_items:
+                        # First time seeing this item - initialize with company data
+                        all_items[item_name] = {
+                            'item_code': item_name,  # Use item_name as the unified identifier
+                            'item_name': item_name,
+                            'category': item['category'],
+                            'unit': item['unit'],
+                            'current_balance': item['current_balance'],
+                            'closing_value': item['closing_value'],
+                            'rate': item['rate'],
+                            'companies': {
+                                company_api.company_name: {
+                                    'item_code': item['item_code'],  # Store original company-specific code
+                                    'current_balance': item['current_balance'],
+                                    'closing_value': item['closing_value'],
+                                    'rate': item['rate']
+                                }
+                            }
+                        }
+                    else:
+                        # Item exists - aggregate the balances
+                        all_items[item_name]['current_balance'] += item['current_balance']
+                        all_items[item_name]['closing_value'] += item['closing_value']
+                        # Use weighted average for rate
+                        existing_qty = sum(comp['current_balance'] for comp in all_items[item_name]['companies'].values())
+                        if existing_qty + item['current_balance'] > 0:
+                            total_value = all_items[item_name]['closing_value'] + item['closing_value']
+                            total_qty = existing_qty + item['current_balance']
+                            all_items[item_name]['rate'] = total_value / total_qty if total_qty > 0 else 0
+                        
+                        # Track company-specific data
+                        all_items[item_name]['companies'][company_api.company_name] = {
+                            'item_code': item['item_code'],  # Store original company-specific code
+                            'current_balance': item['current_balance'],
+                            'closing_value': item['closing_value'],
+                            'rate': item['rate']
+                        }
+                
+                logging.info(f"Retrieved {len(company_items)} items from {company_api.company_name}")
+                
+            except Exception as e:
+                logging.error(f"Failed to fetch stock items from {company_api.company_name}: {e}")
+                continue
+        
+        # Convert to list format
+        aggregated_items = list(all_items.values())
+        logging.info(f"Aggregated {len(aggregated_items)} unique items from all companies")
+        
+        return aggregated_items
+    
+    def get_aggregated_stock_movements(self, from_date: datetime) -> List[Dict]:
+        """
+        Get stock movements from all companies and combine them
+        
+        Args:
+            from_date: Start date for movement query
+            
+        Returns:
+            List of combined movement dictionaries
+        """
+        all_movements = []
+        
+        for company_api in self.companies:
+            try:
+                logging.info(f"Fetching stock movements from {company_api.company_name}...")
+                company_movements = company_api.get_stock_movements(from_date)
+                
+                # Add company identifier to each movement
+                for movement in company_movements:
+                    movement['company'] = company_api.company_name
+                    all_movements.append(movement)
+                
+                logging.info(f"Retrieved {len(company_movements)} movements from {company_api.company_name}")
+                
+            except Exception as e:
+                logging.error(f"Failed to fetch stock movements from {company_api.company_name}: {e}")
+                continue
+        
+        # Aggregate movements by item_name
+        aggregated_movements = {}
+        for movement in all_movements:
+            item_name = movement['item_name']
+            
+            if item_name not in aggregated_movements:
+                # First movement for this item
+                aggregated_movements[item_name] = {
+                    'item_code': item_name,  # Use item_name as unified identifier
+                    'item_name': item_name,
+                    'date': movement['date'],
+                    'quantity_change': movement['quantity_change'],
+                    'billed_qty': movement['billed_qty'],
+                    'amount': movement['amount'],
+                    'voucher_type': 'Multi-Company Balance Change',
+                    'voucher_number': '',
+                    'companies': {
+                        movement['company']: {
+                            'original_item_code': movement['item_code'],  # Store original company-specific code
+                            'quantity_change': movement['quantity_change'],
+                            'amount': movement['amount']
+                        }
+                    }
+                }
+            else:
+                # Aggregate with existing movement
+                aggregated_movements[item_name]['quantity_change'] += movement['quantity_change']
+                aggregated_movements[item_name]['billed_qty'] += movement['billed_qty']
+                aggregated_movements[item_name]['amount'] += movement['amount']
+                
+                # Track company-specific changes
+                aggregated_movements[item_name]['companies'][movement['company']] = {
+                    'original_item_code': movement['item_code'],  # Store original company-specific code
+                    'quantity_change': movement['quantity_change'],
+                    'amount': movement['amount']
+                }
+        
+        result = list(aggregated_movements.values())
+        logging.info(f"Aggregated {len(result)} unique item movements from all companies")
+        
+        return result
+    
+    def close_all_connections(self):
+        """Close all company connections"""
+        for company_api in self.companies:
+            try:
+                company_api.close_connection()
+                logging.info(f"Closed connection for {company_api.company_name}")
+            except Exception as e:
+                logging.warning(f"Error closing connection for {company_api.company_name}: {e}")
+    
+    def export_multi_company_data(self, filename: str = 'multi_company_tally_export.json') -> bool:
+        """Export aggregated data from all companies to JSON file"""
+        try:
+            from_date = datetime.now() - timedelta(days=30)
+            
+            export_data = {
+                'export_timestamp': datetime.now().isoformat(),
+                'companies': [api.company_name for api in self.companies],
+                'aggregated_stock_items': self.get_aggregated_stock_items(),
+                'aggregated_stock_movements': self.get_aggregated_stock_movements(from_date)
+            }
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+            
+            logging.info(f"Multi-company data exported to {filename}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to export multi-company data: {e}")
+            return False
+
+
 class CleanSlateEngine:
     """Calculates clean slate stock levels using JSON data"""
     
@@ -242,10 +450,10 @@ class CleanSlateEngine:
             with open(baseline_file, 'r', newline='', encoding='utf-8') as file:
                 reader = csv.DictReader(file)
                 for row in reader:
-                    item_code = row['item_code'].strip()
-                    if item_code:
-                        baseline_data[item_code] = {
-                            'item_name': row['item_name'].strip(),
+                    item_name = row['item_name'].strip()
+                    if item_name:
+                        baseline_data[item_name] = {
+                            'item_code': row.get('item_code', '').strip(),  # Keep original item_code for reference
                             'physical_count': float(row['physical_count']),
                             'baseline_date': datetime.strptime(row['baseline_date'], '%Y-%m-%d'),
                             'notes': row.get('notes', '').strip()
@@ -274,22 +482,22 @@ class CleanSlateEngine:
         clean_slate_items = []
         
         for tally_item in tally_items:
-            item_code = tally_item['item_code']
+            item_name = tally_item['item_name']
             
-            # Get physical baseline for this item
-            baseline = self.physical_baseline.get(item_code, {})
+            # Get physical baseline for this item (now using item_name)
+            baseline = self.physical_baseline.get(item_name, {})
             physical_count = baseline.get('physical_count', 0)
             baseline_date = baseline.get('baseline_date', datetime.now() - timedelta(days=365))
             
             # Calculate Tally delta since baseline
-            tally_delta = self._calculate_tally_delta(item_code, baseline_date, tally_movements)
+            tally_delta = self._calculate_tally_delta(item_name, baseline_date, tally_movements)
             
             # Clean Slate = Physical Baseline + Tally Delta
             clean_slate_stock = physical_count + tally_delta
             
             clean_slate_item = {
-                'item_code': item_code,
-                'item_name': tally_item.get('item_name', item_code),
+                'item_code': item_name,  # Use item_name as unified identifier
+                'item_name': item_name,
                 'category': tally_item.get('category', 'General'),
                 'unit': tally_item.get('unit', 'Nos'),
                 'current_stock': clean_slate_stock,
@@ -305,12 +513,12 @@ class CleanSlateEngine:
         logging.info(f"Calculated clean slate for {len(clean_slate_items)} items")
         return clean_slate_items
     
-    def _calculate_tally_delta(self, item_code: str, baseline_date: datetime, movements: List[Dict]) -> float:
+    def _calculate_tally_delta(self, item_name: str, baseline_date: datetime, movements: List[Dict]) -> float:
         """
         Calculate net stock movement from Tally since baseline date
         
         Args:
-            item_code: Item code to calculate delta for
+            item_name: Item name to calculate delta for
             baseline_date: Date from which to calculate movements
             movements: List of stock movements
             
@@ -320,7 +528,7 @@ class CleanSlateEngine:
         delta = 0.0
         
         for movement in movements:
-            if movement.get('item_code') == item_code:
+            if movement.get('item_name') == item_name:
                 try:
                     movement_date = datetime.fromisoformat(movement.get('date', ''))
                     if movement_date >= baseline_date:
@@ -436,10 +644,19 @@ class TallySyncManager:
         self.config = self._load_config(config_file)
         self._setup_logging()
         
-        self.tally_api = TallyODBCAPI(
-            self.config['tally']['odbc_dsn'],
-            self.config['tally']['connection_timeout']
-        )
+        # Check if multi-company mode is enabled
+        if self.config['tally'].get('multi_company', True):
+            self.tally_api = MultiCompanyTallyODBCAPI(self.config['tally']['companies'])
+            self.multi_company_mode = True
+            logging.info("Initialized in multi-company mode")
+        else:
+            self.tally_api = TallyODBCAPI(
+                self.config['tally']['odbc_dsn'],
+                self.config['tally']['connection_timeout']
+            )
+            self.multi_company_mode = False
+            logging.info("Initialized in single-company mode")
+        
         self.clean_slate_engine = CleanSlateEngine(self.config)
         self.supabase_sync = SupabaseSync(self.config)
     
@@ -474,9 +691,15 @@ class TallySyncManager:
         logging.info("Starting TallyPrime Clean Slate sync process (ODBC/JSON)")
         
         try:
-            # Test connections
-            if not self.tally_api.test_connection():
-                raise Exception("Cannot connect to TallyPrime via ODBC. Check DSN configuration and ensure TallyPrime is running.")
+            # Test connections based on mode
+            if self.multi_company_mode:
+                connection_results = self.tally_api.test_all_connections()
+                failed_companies = [name for name, success in connection_results.items() if not success]
+                if failed_companies:
+                    raise Exception(f"Cannot connect to TallyPrime companies: {', '.join(failed_companies)}. Check DSN configurations and ensure TallyPrime instances are running.")
+            else:
+                if not self.tally_api.test_connection():
+                    raise Exception("Cannot connect to TallyPrime via ODBC. Check DSN configuration and ensure TallyPrime is running.")
             
             if not self.supabase_sync.test_connection():
                 raise Exception("Cannot connect to Supabase. Check your configuration and internet connection.")
@@ -484,8 +707,12 @@ class TallySyncManager:
             logging.info("All connections verified successfully")
             
             # Fetch data from TallyPrime via ODBC
-            logging.info("Fetching stock items from TallyPrime via ODBC...")
-            tally_items = self.tally_api.get_stock_items()
+            if self.multi_company_mode:
+                logging.info("Fetching aggregated stock items from all TallyPrime companies...")
+                tally_items = self.tally_api.get_aggregated_stock_items()
+            else:
+                logging.info("Fetching stock items from TallyPrime via ODBC...")
+                tally_items = self.tally_api.get_stock_items()
             
             if not tally_items:
                 logging.warning("No stock items found in TallyPrime")
@@ -494,10 +721,15 @@ class TallySyncManager:
             logging.info(f"Retrieved {len(tally_items)} stock items from TallyPrime")
             
             # Fetch stock movements
-            logging.info("Fetching stock movements from TallyPrime...")
             movement_days_back = self.config['sync']['movement_days_back']
             from_date = datetime.now() - timedelta(days=movement_days_back)
-            tally_movements = self.tally_api.get_stock_movements(from_date)
+            
+            if self.multi_company_mode:
+                logging.info("Fetching aggregated stock movements from all TallyPrime companies...")
+                tally_movements = self.tally_api.get_aggregated_stock_movements(from_date)
+            else:
+                logging.info("Fetching stock movements from TallyPrime...")
+                tally_movements = self.tally_api.get_stock_movements(from_date)
             
             logging.info(f"Retrieved {len(tally_movements)} stock movements from TallyPrime")
             

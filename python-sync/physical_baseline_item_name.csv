@@ -1,0 +1,5 @@
+item_code,item_name,physical_count,baseline_date,notes
+BRAKE001,Brake Pad Set,50,2024-01-01,Combined count across both companies - SP Test 1 and SP Test 2
+FILTER002,Air Filter,30,2024-01-01,Total physical inventory from all locations
+ENGINE003,Engine Oil,25,2024-01-01,Aggregated stock from Company 1 (ENG001) and Company 2 (OIL003)
+SPARK004,Spark Plug,100,2024-01-01,Combined inventory - different codes but same item across companies

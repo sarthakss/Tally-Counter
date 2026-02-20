@@ -4,15 +4,24 @@
     "key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1leWNpdnplamhwZ2Nzc2Nldm5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzNDg0OTAsImV4cCI6MjA4NTkyNDQ5MH0.9C3_2GS5EVclSTH4i4BwGWdB2850sFpmZr0qcdr2cGc"
   },
   "tally": {
-    "odbc_dsn": "TallyODBC64_9000",
-    "company_name": "SP Test 1",
-    "connection_timeout": 30
+    "multi_company": true,
+    "companies": [
+      {
+        "company_name": "SP Test 1",
+        "dsn_name": "TallyODBC64_9000",
+        "timeout": 30
+      },
+      {
+        "company_name": "SP Test 2", 
+        "dsn_name": "TallyODBC64_9001",
+        "timeout": 30
+      }
+    ]
   },
   "sync": {
     "physical_baseline_file": "physical_baseline.csv",
-    "sync_interval_hours": 24,
-    "batch_size": 100,
-    "movement_days_back": 365
+    "movement_days_back": 30,
+    "batch_size": 50
   },
   "logging": {
     "level": "INFO",
