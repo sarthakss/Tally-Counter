@@ -21,7 +21,7 @@ from supabase import create_client, Client
 class TallyODBCAPI:
     """ODBC-based interface for TallyPrime data extraction"""
     
-    def __init__(self, dsn_name: str = "TallyODBC64_9000", timeout: int = 30, company_name: str = "Default"):
+    def __init__(self, dsn_name: str = "TallyODBC64_9000", timeout: int = 60, company_name: str = "Default"):
         self.dsn_name = dsn_name
         self.timeout = timeout
         self.company_name = company_name
@@ -42,9 +42,10 @@ class TallyODBCAPI:
         """Get or create ODBC connection"""
         if not self.connection:
             try:
-                conn_string = f"DSN={self.dsn_name};Timeout={self.timeout};"
+                conn_string = f"DSN={self.dsn_name};Timeout={self.timeout};CommandTimeout={self.timeout};"
                 self.connection = pyodbc.connect(conn_string)
-                logging.info("Successfully connected to TallyPrime via ODBC")
+                self.connection.timeout = self.timeout
+                logging.info(f"Successfully connected to TallyPrime via ODBC (timeout: {self.timeout}s)")
             except pyodbc.Error as e:
                 logging.error(f"Failed to connect to TallyPrime via ODBC: {e}")
                 raise
@@ -241,7 +242,7 @@ class MultiCompanyTallyODBCAPI:
         for config in companies_config:
             company_api = TallyODBCAPI(
                 dsn_name=config['dsn_name'],
-                timeout=config.get('timeout', 30),
+                timeout=config.get('timeout', 60),  # Increased default timeout
                 company_name=config['company_name']
             )
             self.companies.append(company_api)
@@ -587,14 +588,15 @@ class SupabaseSync:
             True if sync successful, False otherwise
         """
         try:
-            batch_size = self.config['sync']['batch_size']
+            batch_size = self.config['sync'].get('batch_size', 150)  # Increased default batch size
             synced_count = 0
             
             for i in range(0, len(items), batch_size):
                 batch = items[i:i + batch_size]
                 
+                # Prepare bulk data for items table
+                items_data = []
                 for item in batch:
-                    # Upsert the item master record
                     item_data = {
                         'item_code': item['item_code'],
                         'item_name': item['item_name'],
@@ -602,35 +604,44 @@ class SupabaseSync:
                         'unit': item['unit'],
                         'updated_at': datetime.now().isoformat()
                     }
+                    items_data.append(item_data)
+                
+                # Bulk upsert items
+                items_result = self.client.table('items').upsert(
+                    items_data,
+                    on_conflict='item_code'
+                ).execute()
+                
+                if items_result.data:
+                    # Create mapping of item_code to item_id for stock levels
+                    item_code_to_id = {item['item_code']: item['id'] for item in items_result.data}
                     
-                    result = self.client.table('items').upsert(
-                        item_data,
-                        on_conflict='item_code'
-                    ).execute()
+                    # Prepare bulk data for stock_levels table
+                    stock_data = []
+                    for item in batch:
+                        if item['item_code'] in item_code_to_id:
+                            stock_record = {
+                                'item_id': item_code_to_id[item['item_code']],
+                                'current_stock': item['current_stock'],
+                                'physical_baseline': item['physical_baseline'],
+                                'tally_delta': item['tally_delta'],
+                                'last_sync': item['last_sync'].isoformat(),
+                                'sync_source': item['sync_source']
+                            }
+                            stock_data.append(stock_record)
                     
-                    if result.data:
-                        item_id = result.data[0]['id']
-                        
-                        # Upsert the stock level
-                        stock_data = {
-                            'item_id': item_id,
-                            'current_stock': item['current_stock'],
-                            'physical_baseline': item['physical_baseline'],
-                            'tally_delta': item['tally_delta'],
-                            'last_sync': item['last_sync'].isoformat(),
-                            'sync_source': item['sync_source']
-                        }
-                        
+                    # Bulk upsert stock levels
+                    if stock_data:
                         self.client.table('stock_levels').upsert(
                             stock_data,
                             on_conflict='item_id'
                         ).execute()
                         
-                        synced_count += 1
+                        synced_count += len(stock_data)
                 
-                logging.info(f"Synced batch {i//batch_size + 1}: {len(batch)} items")
+                logging.info(f"Bulk synced batch {i//batch_size + 1}: {len(batch)} items")
             
-            logging.info(f"Successfully synced {synced_count} items to Supabase")
+            logging.info(f"Successfully bulk synced {synced_count} items to Supabase")
             return True
             
         except Exception as e:

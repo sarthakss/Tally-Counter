@@ -9,22 +9,36 @@
       {
         "company_name": "SP Test 1",
         "dsn_name": "TallyODBC64_9000",
-        "timeout": 30
+        "timeout": 90
       },
       {
-        "company_name": "SP Test 1", 
+        "company_name": "SP Test 2", 
         "dsn_name": "TallyODBC64_9001",
-        "timeout": 30
+        "timeout": 90
       }
     ]
   },
   "sync": {
     "physical_baseline_file": "physical_baseline.csv",
     "movement_days_back": 30,
-    "batch_size": 50
+    "batch_size": 150,
+    "max_items_per_sync": 10000,
+    "enable_bulk_operations": true,
+    "connection_pool_size": 5
+  },
+  "performance": {
+    "query_timeout": 300,
+    "retry_attempts": 3,
+    "retry_delay": 5,
+    "memory_limit_mb": 512,
+    "enable_parallel_processing": false,
+    "chunk_size": 1000
   },
   "logging": {
     "level": "INFO",
-    "file": "sync.log"
+    "file": "sync.log",
+    "max_file_size": "10MB",
+    "backup_count": 5,
+    "enable_performance_logging": true
   }
 }
